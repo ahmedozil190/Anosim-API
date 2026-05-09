@@ -2,12 +2,12 @@ import asyncio
 import logging
 import os
 import re
-from telethon import TelegramClient, functions, types
-from telethon.tl.types import EmailVerificationCode
-from telethon.errors import (
-    SessionPasswordNeededError, RPCError,
-    PhoneCodeInvalidError, PhoneCodeExpiredError
+from telethon import TelegramClient, functions
+from telethon.tl.types import (
+    EmailVerifyPurposeLoginSetup,
+    EmailVerificationCode,
 )
+from telethon.errors import SessionPasswordNeededError, RPCError
 from services.anosim_api import AnosimAPI
 from services.email_service import EmailService
 from config import TELEGRAM_API_ID, TELEGRAM_API_HASH, SESSIONS_DIR
@@ -15,15 +15,12 @@ import database
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 3  # How many numbers to try before giving up
+MAX_RETRIES = 5
 
 
 class AccountCreator:
     def __init__(self, api_key):
         self.api = AnosimAPI(api_key)
-
-    def _new_email_service(self):
-        return EmailService()
 
     def _make_client(self, session_path):
         return TelegramClient(
@@ -37,56 +34,48 @@ class AccountCreator:
             system_lang_code='en-US',
         )
 
-    async def _buy_number(self, product_id, provider_id):
-        """Buy a number and return (phone, booking_id) or raise on failure."""
-        order = await self.api.create_order(product_id, provider_id=provider_id)
-        bookings = order.get("orderBookings") or order.get("bookings")
-        if not order or not bookings:
-            raise RuntimeError("Failed to buy number from Anosim")
-        return bookings[0]['number'], bookings[0]['id']
-
     async def create_account(self, country_id, product_id, first_name, last_name,
                               provider_id=0, status_callback=None):
-        """
-        Fully automated account creation with auto-retry.
-        If a number requires an inaccessible email or is blocked,
-        the bot cancels the booking, buys a fresh number and retries.
-        """
+        """Auto-retry account creation up to MAX_RETRIES times."""
         last_error = "Unknown error"
 
         for attempt_num in range(1, MAX_RETRIES + 1):
-            logger.info(f"Account creation attempt {attempt_num}/{MAX_RETRIES}")
-            result = await self._try_create(
+            if attempt_num > 1:
+                logger.info(f"Retry attempt {attempt_num}/{MAX_RETRIES}...")
+
+            result = await self._try_once(
                 product_id, first_name, last_name,
-                provider_id, status_callback, attempt_num
+                provider_id, status_callback
             )
+
             if result["success"]:
                 return result
-            last_error = result["error"]
-            logger.warning(f"Attempt {attempt_num} failed: {last_error}")
 
-            # Don't retry for errors that retrying won't fix
-            if any(x in last_error for x in ["2FA", "Sign-in failed", "SMS timeout"]):
+            last_error = result["error"]
+            logger.warning(f"[Attempt {attempt_num}] Failed: {last_error}")
+
+            # Some errors won't benefit from retrying
+            if not result.get("retry", True):
                 break
 
-        return {"success": False, "error": f"(بعد {MAX_RETRIES} محاولات): {last_error}"}
+        return {"success": False, "error": f"فشل بعد {attempt_num} محاولات: {last_error}"}
 
-    async def _try_create(self, product_id, first_name, last_name,
-                          provider_id, status_callback, attempt_num):
-        """Single attempt to buy a number and create an account."""
+    async def _try_once(self, product_id, first_name, last_name,
+                        provider_id, status_callback):
+        # ── Step 1: Buy Number ──────────────────────────────────────────
+        order = await self.api.create_order(product_id, provider_id=provider_id)
+        bookings = order.get("orderBookings") or order.get("bookings")
+        if not order or not bookings:
+            return {"success": False, "error": "Failed to buy number from Anosim", "retry": True}
 
-        # --- Step 1: Buy Number ---
-        try:
-            phone, bid = await self._buy_number(product_id, provider_id)
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-        logger.info(f"Bought number: {phone} (booking: {bid})")
+        phone = bookings[0]['number']
+        bid   = bookings[0]['id']
+        logger.info(f"Bought number: {phone} (booking_id={bid})")
 
         if status_callback:
             await status_callback('status_bought', phone=phone, id=bid)
 
-        # --- Step 2: Setup Client ---
+        # ── Step 2: Setup Client ────────────────────────────────────────
         session_path = os.path.join(SESSIONS_DIR, phone)
         sp = f"{session_path}.session"
         if os.path.exists(sp):
@@ -97,63 +86,90 @@ class AccountCreator:
         try:
             await client.connect()
 
-            # --- Step 3: Request Code ---
+            # ── Step 3: Request Code ────────────────────────────────────
             if status_callback:
                 await status_callback('status_requesting', phone=phone, id=bid)
 
-            sent_code = await client.send_code_request(phone)
-            code_type = type(sent_code.type).__name__
-            logger.info(f"Code type: {code_type}")
+            sent_code  = await client.send_code_request(phone)
+            code_type  = type(sent_code.type).__name__
+            phone_hash = sent_code.phone_code_hash
+            logger.info(f"Telegram code type: {code_type}")
 
-            # --- Step 4: Handle code type ---
+            # ── Step 4: Handle code type ────────────────────────────────
             if code_type == 'SentCodeTypeSms':
-                # Best case — SMS sent directly, nothing to do
+                # Best case — SMS already on its way
                 pass
 
-            elif code_type == 'SentCodeTypeEmailCode':
-                # This number had an old account with a linked email.
-                # We don't have access to that email.
-                # Try once to force SMS via ResendCodeRequest.
-                logger.info("SentCodeTypeEmailCode — trying to force SMS via ResendCodeRequest...")
-                try:
-                    sent_code = await client(functions.auth.ResendCodeRequest(
-                        phone_number=phone,
-                        phone_code_hash=sent_code.phone_code_hash
-                    ))
-                    new_type = type(sent_code.type).__name__
-                    logger.info(f"ResendCode returned: {new_type}")
-                    if new_type != 'SentCodeTypeSms':
-                        # Still not SMS — cancel and retry with a new number
+            elif code_type in ('SentCodeTypeEmailCode', 'SentCodeTypeApp'):
+                # Telegram wants email verification.
+                # CASE A (new number): Telegram allows us to supply our own email.
+                # CASE B (old number): Telegram sent the code to the old linked email.
+                #
+                # Strategy:
+                #   1. Try the email flow with a temp email (handles Case A)
+                #   2. If Telegram rejects our email → try ResendCodeRequest for SMS (handles Case B)
+                #   3. If that also fails → cancel booking, retry with new number
+
+                logger.info(f"Code type '{code_type}' → trying temp-email verification first...")
+                email_service = EmailService()
+                email = await email_service.create_account()
+
+                if not email:
+                    # email service down — fall back to SMS directly
+                    logger.warning("Could not create temp email. Trying ResendCodeRequest...")
+                    sent_code, ok = await self._force_sms(client, phone, phone_hash)
+                    if not ok:
                         await self.api.cancel_order_booking(bid)
-                        return {"success": False,
-                                "error": f"الرقم مربوط بإيميل قديم ولا يمكن تجاوزه، جاري شراء رقم آخر..."}
-                except RPCError as e:
-                    logger.error(f"ResendCodeRequest failed: {e}")
-                    await self.api.cancel_order_booking(bid)
-                    return {"success": False,
-                            "error": f"الرقم مربوط بإيميل قديم ولا يمكن تجاوزه، جاري شراء رقم آخر..."}
+                        return {"success": False, "error": "فشل إنشاء الإيميل وفشل إرسال SMS", "retry": True}
+                else:
+                    if status_callback:
+                        await status_callback('status_email_created', phone=phone, id=bid, email=email)
+
+                    email_ok = await self._email_verify_flow(
+                        client, phone, phone_hash, email, email_service,
+                        status_callback, bid
+                    )
+
+                    if email_ok == "verified":
+                        # Email verified — now request a fresh SMS code
+                        if status_callback:
+                            await status_callback('status_email_success', phone=phone, id=bid, email=email)
+                        await asyncio.sleep(2)
+                        sent_code = await client.send_code_request(phone)
+
+                    elif email_ok == "sms_fallback":
+                        # Email flow rejected — try ResendCodeRequest
+                        logger.info("Email rejected by Telegram — trying ResendCodeRequest for SMS...")
+                        sent_code, ok = await self._force_sms(client, phone, phone_hash)
+                        if not ok:
+                            await self.api.cancel_order_booking(bid)
+                            return {"success": False,
+                                    "error": "الرقم محمي بإيميل قديم ولا يمكن تجاوزه",
+                                    "retry": True}
+                    else:
+                        # Email code didn't arrive in time
+                        sent_code, ok = await self._force_sms(client, phone, phone_hash)
+                        if not ok:
+                            await self.api.cancel_order_booking(bid)
+                            return {"success": False,
+                                    "error": "انتهى وقت انتظار كود الإيميل وفشل SMS",
+                                    "retry": True}
 
             else:
-                # SentCodeTypeApp, MissedCall, or other — try to force SMS
-                logger.info(f"Code type '{code_type}' — trying ResendCodeRequest for SMS...")
-                try:
-                    sent_code = await client(functions.auth.ResendCodeRequest(
-                        phone_number=phone,
-                        phone_code_hash=sent_code.phone_code_hash
-                    ))
-                    logger.info(f"ResendCode returned: {type(sent_code.type).__name__}")
-                except RPCError as e:
-                    logger.error(f"ResendCodeRequest failed: {e}")
+                # MissedCall, Flash, or unknown — try to force SMS
+                sent_code, ok = await self._force_sms(client, phone, phone_hash)
+                if not ok:
                     await self.api.cancel_order_booking(bid)
                     return {"success": False,
-                            "error": f"تيليجرام رفض إرسال SMS للرقم، جاري شراء رقم آخر..."}
+                            "error": f"نوع كود غير معروف: {code_type}",
+                            "retry": True}
 
-            # --- Step 5: Poll SMS from Anosim ---
+            # ── Step 5: Poll SMS from Anosim ────────────────────────────
             code = None
-            for poll_attempt in range(1, 21):
+            for attempt in range(1, 21):
                 if status_callback:
                     await status_callback('status_waiting', phone=phone, id=bid,
-                                          attempt=poll_attempt, total=20)
+                                          attempt=attempt, total=20)
                 await asyncio.sleep(15)
                 sms_list = await self.api.get_sms(bid)
                 if sms_list:
@@ -167,38 +183,93 @@ class AccountCreator:
 
             if not code:
                 await self.api.cancel_order_booking(bid)
-                return {"success": False, "error": "SMS timeout — no code received"}
+                return {"success": False, "error": "لم يصل الكود عبر SMS", "retry": True}
 
-            # --- Step 6: Sign In / Sign Up ---
+            # ── Step 6: Sign In / Sign Up ───────────────────────────────
             try:
                 await client.sign_up(code, first_name, last_name)
             except Exception:
                 try:
                     await client.sign_in(phone, code)
                 except SessionPasswordNeededError:
-                    return {"success": False, "error": "2FA is enabled on this number"}
-                except (PhoneCodeInvalidError, PhoneCodeExpiredError) as e:
-                    return {"success": False, "error": f"Sign-in failed: {e}"}
+                    return {"success": False, "error": "2FA مفعّل على هذا الرقم", "retry": False}
                 except Exception as e:
-                    return {"success": False, "error": f"Sign-in failed: {e}"}
+                    return {"success": False, "error": f"فشل تسجيل الدخول: {e}", "retry": False}
 
-            # --- Step 7: Save Account ---
+            # ── Step 7: Save ────────────────────────────────────────────
             database.add_account(phone, phone, TELEGRAM_API_ID, TELEGRAM_API_HASH,
                                   first_name, last_name)
             return {"success": True, "phone": phone, "first_name": first_name}
 
         except Exception as e:
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-            # Try to cancel booking on unexpected errors
+            logger.error(f"Unexpected error on {phone}: {e}", exc_info=True)
             try:
                 await self.api.cancel_order_booking(bid)
             except Exception:
                 pass
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "retry": True}
 
         finally:
             await client.disconnect()
-            # Clean up failed session files
             sp2 = f"{session_path}.session"
             if os.path.exists(sp2) and not database.get_account(phone):
                 os.remove(sp2)
+
+    # ── Helpers ─────────────────────────────────────────────────────────
+
+    async def _email_verify_flow(self, client, phone, phone_hash, email,
+                                  email_service, status_callback, bid):
+        """
+        Try to verify via a temp email.
+        Returns: 'verified', 'sms_fallback', or 'timeout'
+        """
+        try:
+            await client(functions.account.SendVerifyEmailCodeRequest(
+                purpose=EmailVerifyPurposeLoginSetup(
+                    phone_number=phone,
+                    phone_code_hash=phone_hash
+                ),
+                email=email
+            ))
+        except RPCError as e:
+            logger.error(f"SendVerifyEmailCodeRequest rejected: {e}")
+            return "sms_fallback"
+
+        # Wait for code in temp email inbox
+        email_code = await email_service.wait_for_code(timeout=90)
+
+        if not email_code:
+            logger.warning("No email code received within timeout.")
+            return "timeout"
+
+        # Verify the code
+        try:
+            await client(functions.account.VerifyEmailRequest(
+                purpose=EmailVerifyPurposeLoginSetup(
+                    phone_number=phone,
+                    phone_code_hash=phone_hash
+                ),
+                verification=EmailVerificationCode(code=email_code)
+            ))
+            logger.info("Email verification successful!")
+            return "verified"
+        except RPCError as e:
+            logger.error(f"VerifyEmailRequest failed: {e}")
+            return "sms_fallback"
+
+    async def _force_sms(self, client, phone, phone_hash):
+        """
+        Try to switch to SMS via ResendCodeRequest.
+        Returns: (sent_code, True) on success, (None, False) on failure.
+        """
+        try:
+            sent_code = await client(functions.auth.ResendCodeRequest(
+                phone_number=phone,
+                phone_code_hash=phone_hash
+            ))
+            new_type = type(sent_code.type).__name__
+            logger.info(f"ResendCodeRequest → {new_type}")
+            return sent_code, True
+        except RPCError as e:
+            logger.error(f"ResendCodeRequest failed: {e}")
+            return None, False
