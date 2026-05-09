@@ -104,7 +104,10 @@ class AccountCreator:
                 try:
                     # Use the CORRECT purpose: EmailVerifyPurposeLoginSetup
                     await client(functions.account.SendVerifyEmailCodeRequest(
-                        purpose=EmailVerifyPurposeLoginSetup(),
+                        purpose=EmailVerifyPurposeLoginSetup(
+                            phone_number=phone,
+                            phone_code_hash=sent_code.phone_code_hash
+                        ),
                         email=email
                     ))
 
@@ -122,7 +125,10 @@ class AccountCreator:
                         # Verify the email code using correct API signature:
                         # VerifyEmailRequest(purpose, verification)
                         await client(functions.account.VerifyEmailRequest(
-                            purpose=EmailVerifyPurposeLoginSetup(),
+                            purpose=EmailVerifyPurposeLoginSetup(
+                                phone_number=phone,
+                                phone_code_hash=sent_code.phone_code_hash
+                            ),
                             verification=EmailVerificationCode(code=email_code)
                         ))
                         if status_callback:
