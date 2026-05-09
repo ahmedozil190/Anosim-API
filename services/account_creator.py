@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import re
-import socks
 from telethon import TelegramClient, functions
 from telethon.tl.types import (
     EmailVerifyPurposeLoginSetup,
@@ -24,11 +23,17 @@ class AccountCreator:
         self.api = AnosimAPI(api_key)
 
     def _make_client(self, session_path):
-        # Build optional SOCKS5 proxy for SMS-fee bypass
+        # Build optional proxy for SMS-fee bypass using dict format
         proxy = None
         if PROXY_HOST:
-            proxy = (socks.SOCKS5, PROXY_HOST, PROXY_PORT,
-                     True, PROXY_USER or None, PROXY_PASS or None)
+            proxy = {
+                'proxy_type': 'socks5',
+                'addr': PROXY_HOST,
+                'port': PROXY_PORT,
+                'username': PROXY_USER or '',
+                'password': PROXY_PASS or '',
+                'rdns': True
+            }
             logger.info(f"Using proxy: {PROXY_HOST}:{PROXY_PORT}")
 
         return TelegramClient(
