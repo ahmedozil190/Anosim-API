@@ -2,4 +2,4 @@ aiogram
 Telethon
 httpx
 python-dotenv
-PySocks
+python-socks[asyncio]

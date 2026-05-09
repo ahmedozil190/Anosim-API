@@ -109,10 +109,9 @@ class AccountCreator:
                 # ✅ Best case — SMS already sent, nothing to do
                 pass
 
-            elif code_type in ('SentCodeTypeEmailCode', 'SentCodeTypeApp'):
-                # Both types mean: "Telegram wants email verification first, then SMS".
+            elif code_type == 'SentCodeTypeEmailCode':
+                # This means: "Telegram wants email verification first, then SMS".
                 # SentCodeTypeEmailCode = email-linked old account
-                # SentCodeTypeApp       = Telegram app flow that requires email then SMS
                 email_pattern = getattr(sent_code.type, 'email_pattern', '')
                 logger.info(f"Code type '{code_type}' — email_pattern: '{email_pattern}' → starting email flow...")
 
@@ -154,13 +153,16 @@ class AccountCreator:
                                 "retry": False}
 
             else:
-                # MissedCall, FlashCall, etc.
+                # MissedCall, FlashCall, SentCodeTypeApp, etc.
+                # DO NOT use email flow here! Telegram API strictly rejects SendVerifyEmailCodeRequest
+                # for these types with "invalid phone_code_hash".
                 logger.info(f"Code type '{code_type}' → requesting SMS via ResendCodeRequest...")
                 sent_code, ok = await self._force_sms(client, phone, phone_hash)
                 if not ok:
                     await self.api.cancel_order_booking(bid)
                     return {"success": False,
-                            "error": f"تيليجرام رفض إرسال SMS ({code_type})",
+                            "error": f"❌ الرقم محظور من تيليجرام ({code_type})\n\n"
+                                     f"📌 جرب مزوداً أو دولةً أخرى.",
                             "retry": False}
 
             # ── Step 5: Poll SMS from Anosim ────────────────────────────
