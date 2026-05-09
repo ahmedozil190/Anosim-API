@@ -163,19 +163,12 @@ async def confirm_purchase(callback: types.CallbackQuery):
         kwargs['price'] = price_val
         kwargs['provider'] = prov_name
         
-        templates = {
-            'status_bought': get_string('status_bought', **kwargs),
-            'status_requesting': get_string('status_requesting', **kwargs),
-            'status_email_created': get_string('status_email_created', **kwargs),
-            'status_email_success': get_string('status_email_success', **kwargs),
-            'status_waiting': get_string('status_waiting', **kwargs),
-        }
-        text = templates.get(status_type)
-        if text:
-            try:
+        try:
+            text = get_string(status_type, **kwargs)
+            if text and text != status_type:
                 await status_msg.edit_text(text)
-            except Exception:
-                pass
+        except Exception as e:
+            logger.error(f"Error updating status: {e}")
 
     result = await creator.create_account(
         country_id=country_id,
