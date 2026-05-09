@@ -11,7 +11,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import BOT_TOKEN, ANOSIM_API_KEY
 from services.anosim_api import AnosimAPI
 from services.account_creator import AccountCreator
-from utils.strings import MESSAGES, KEYBOARDS
+from utils.strings import STRINGS, get_string
 import database
 
 # Setup logging
@@ -33,7 +33,7 @@ async def cmd_start(message: types.Message):
     builder = InlineKeyboardBuilder()
     builder.button(text="🌍 Start Registration", callback_data="start_reg")
     builder.button(text="📊 My Accounts", callback_data="my_accounts")
-    await message.answer(MESSAGES['welcome'], reply_markup=builder.as_markup())
+    await message.answer(get_string('start'), reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data == "start_reg")
 async def start_reg_flow(callback: types.CallbackQuery):
