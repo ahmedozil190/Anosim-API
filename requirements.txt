@@ -2,3 +2,4 @@ aiogram
 Telethon
 httpx
 python-dotenv
+PySocks
