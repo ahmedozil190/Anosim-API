@@ -15,7 +15,7 @@ import database
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 5
+MAX_RETRIES = 1  # Set to 1 to avoid burning money on blocked numbers
 
 
 class AccountCreator:
@@ -145,13 +145,16 @@ class AccountCreator:
 
             else:
                 # SentCodeTypeApp, MissedCall, FlashCall, etc.
+                # DO NOT retry — just fail immediately. If this number is blocked,
+                # all numbers from the same provider will likely be blocked too.
                 logger.info(f"Code type '{code_type}' → requesting SMS via ResendCodeRequest...")
                 sent_code, ok = await self._force_sms(client, phone, phone_hash)
                 if not ok:
                     await self.api.cancel_order_booking(bid)
                     return {"success": False,
-                            "error": f"تيليجرام رفض إرسال SMS ({code_type})",
-                            "retry": True}
+                            "error": f"❌ الرقم محظور من تيليجرام ({code_type})\n\n"
+                                     f"📌 جرب مزوداً أو دولةً أخرى.",
+                            "retry": False}  # Don't retry — same provider = same problem
 
             # ── Step 5: Poll SMS from Anosim ────────────────────────────
             code = None
