@@ -63,7 +63,7 @@ async def start_reg_flow(event):
     builder = InlineKeyboardBuilder()
     for c in countries[:20]:
         builder.button(
-            text=f"🌍 {c['name']} (${c.get('minPrice', '?')})",
+            text=f"🌍 {c['country']} (${c.get('price', '?')})",
             callback_data=f"country_{c['id']}"
         )
     builder.adjust(2)
@@ -77,8 +77,11 @@ async def select_country(callback: types.CallbackQuery):
     country_id = callback.data.split("_")[1]
     products = await api.get_products(country_id)
     telegram_product = next(
-        (p for p in products if "telegram" in p.get('name', '').lower()), None
+        (p for p in products if "telegram" in p.get('service', '').lower()), None
     )
+    # If no Telegram-specific product, take the first available
+    if not telegram_product and products:
+        telegram_product = products[0]
 
     if not telegram_product:
         await callback.message.answer("❌ خدمة تيليجرام غير متوفرة لهذه الدولة.")
