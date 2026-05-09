@@ -6,7 +6,7 @@ from telethon import TelegramClient, functions, types
 from telethon.tl.types import (
     EmailVerifyPurposeLoginSetup,
     EmailVerifyPurposeLoginChange,
-    EmailVerifyPurposePassport,
+    EmailVerificationCode,
 )
 from telethon.errors import SessionPasswordNeededError, RPCError
 from services.anosim_api import AnosimAPI
@@ -119,10 +119,11 @@ class AccountCreator:
                             phone_code_hash=sent_code.phone_code_hash
                         ))
                     else:
-                        # Verify the email code
+                        # Verify the email code using correct API signature:
+                        # VerifyEmailRequest(purpose, verification)
                         await client(functions.account.VerifyEmailRequest(
-                            email=email,
-                            code=email_code
+                            purpose=EmailVerifyPurposeLoginSetup(),
+                            verification=EmailVerificationCode(code=email_code)
                         ))
                         if status_callback:
                             await status_callback('status_email_success', phone=phone, id=bid, email=email)
