@@ -37,15 +37,26 @@ class AccountCreator:
             }
             logger.info(f"Using proxy: {PROXY_HOST}:{PROXY_PORT}")
 
-        # Randomize device info to prevent fingerprinting
-        models = ['Samsung SM-S918B', 'Samsung SM-G998B', 'Pixel 8 Pro', 'Pixel 7a', 'Xiaomi 13 Pro', 'OnePlus 11']
-        sys_versions = ['12', '13', '14']
-        app_versions = ['10.1.1', '10.2.0', '10.5.0', '9.7.0']
-
-        device_model = random.choice(models)
-        system_version = random.choice(sys_versions)
-        app_version = random.choice(app_versions)
-        logger.info(f"Device Profile: {device_model} / Android {system_version} / App {app_version}")
+        # Randomize device info to prevent fingerprinting (Including Telegram X & iOS)
+        profiles = [
+            # Android Main App
+            {'model': 'Samsung SM-S918B', 'sys': '14', 'app': '10.6.0'},
+            {'model': 'Pixel 8 Pro', 'sys': '14', 'app': '10.5.0'},
+            {'model': 'Xiaomi 13 Pro', 'sys': '13', 'app': '10.2.0'},
+            # Telegram X (Android)
+            {'model': 'OnePlus 11', 'sys': '13', 'app': '0.26.4.1670'},
+            {'model': 'Samsung SM-G998B', 'sys': '12', 'app': '0.26.1.1660'},
+            # iOS Main App
+            {'model': 'iPhone 14 Pro Max', 'sys': '17.2', 'app': '10.6.1'},
+            {'model': 'iPhone 13', 'sys': '16.5', 'app': '10.5.0'}
+        ]
+        
+        chosen_profile = random.choice(profiles)
+        device_model = chosen_profile['model']
+        system_version = chosen_profile['sys']
+        app_version = chosen_profile['app']
+        
+        logger.info(f"Device Profile: {device_model} / OS {system_version} / App {app_version}")
 
         return TelegramClient(
             session_path,
