@@ -55,13 +55,14 @@ class AccountCreator:
             # Determine if we need Login or Registration purpose
             is_app = sent_code and isinstance(sent_code.type, types.auth.SentCodeTypeApp)
             
+            from telethon.tl import types as tl_types
             if is_app and sent_code and hasattr(sent_code, 'phone_code_hash'):
-                purpose = types.EmailVerifyPurposeLogin(
+                purpose = tl_types.EmailVerifyPurposeLogin(
                     phone_number=phone,
                     phone_code_hash=sent_code.phone_code_hash
                 )
             else:
-                purpose = types.EmailVerifyPurposeRegistration()
+                purpose = tl_types.EmailVerifyPurposeRegistration()
 
             # Execute request
             await client(functions.account.SendVerifyEmailCodeRequest(
