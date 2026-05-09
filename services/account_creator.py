@@ -4,25 +4,10 @@ import os
 import re
 from telethon import TelegramClient, functions, types
 from telethon.tl.types import (
+    EmailVerifyPurposeLoginSetup,
     EmailVerifyPurposeLoginChange,
     EmailVerificationCode,
 )
-
-# --- ROBUST TL FALLBACKS ---
-class EmailVerifyPurposeRegistration(types.TLObject):
-    CONSTRUCTOR_ID = 0xb9d37505
-    def _bytes(self): return b'\x05u\xd3\xb9'
-
-class EmailVerifyPurposeLogin(types.TLObject):
-    CONSTRUCTOR_ID = 0x43458af4
-    def __init__(self, phone, hash): self.phone, self.hash = phone, hash
-    def _bytes(self):
-        # Manual serialization for strings
-        def s(txt):
-            b = txt.encode('utf-8'); l = len(b)
-            res = bytes([l]) + b if l <= 253 else b'\xfe' + l.to_bytes(3, 'little') + b
-            return res + b'\x00' * (-(len(res)) % 4)
-        return b'\xf4\x8aEC' + s(self.phone) + s(self.hash)
 from telethon.errors import SessionPasswordNeededError, RPCError
 from services.anosim_api import AnosimAPI
 from services.email_service import EmailService
@@ -86,81 +71,32 @@ class AccountCreator:
             code_type = type(sent_code.type).__name__
             logger.info(f"Telegram code type: {code_type}")
 
-            # --- Step 4: Handle Email Verification (if required) ---
-            # Telegram sends email verification for "recycled" numbers that had accounts
-            if code_type in ('SentCodeTypeEmailCode', 'SentCodeTypeMissedCall'):
-                # SentCodeTypeEmailCode means Telegram wants to send code to a linked email
-                # We need to handle this differently - just poll for SMS resend
-                logger.info("Email code type detected, attempting SMS bypass...")
-                await asyncio.sleep(65)
+            # --- Step 4: Handle non-SMS code types ---
+            # Telegram may return EmailCode, App or MissedCall type for recycled numbers.
+            # The ONLY reliable way to get an SMS is to call ResendCodeRequest.
+            # SendVerifyEmailCodeRequest is for recovery-email setup and CANNOT be used here.
+            
+            if code_type != 'SentCodeTypeSms':
+                logger.info(f"Code type is '{code_type}'. Requesting SMS via ResendCodeRequest...")
+                
+                if status_callback and code_type == 'SentCodeTypeEmailCode':
+                    # Show the email field with a note that we're bypassing it
+                    await status_callback('status_email_created', phone=phone, id=bid,
+                                         email="Bypassing... waiting for SMS")
+
+                # Wait before requesting resend (Telegram rate limits)
+                await asyncio.sleep(5)
                 try:
                     sent_code = await client(functions.auth.ResendCodeRequest(
                         phone_number=phone,
                         phone_code_hash=sent_code.phone_code_hash
                     ))
-                    logger.info(f"After resend, new code type: {type(sent_code.type).__name__}")
-                except Exception as e:
-                    logger.error(f"Resend failed: {e}")
-                    return {"success": False, "error": f"SMS bypass failed: {e}"}
-
-            elif code_type == 'SentCodeTypeApp':
-                # App-based code — requires email verification via account.sendVerifyEmailCode
-                # This uses EmailVerifyPurposeLoginSetup (the CORRECT type for new registrations)
-                logger.info("App code type detected, using email verification flow...")
-                email_service = self._new_email_service()
-                email = await email_service.create_account()
-
-                if not email:
-                    return {"success": False, "error": "Failed to create temporary email"}
-
-                if status_callback:
-                    await status_callback('status_email_created', phone=phone, id=bid, email=email)
-
-                try:
-                    # Use the raw byte fallback for Login/Registration
-                    purpose = EmailVerifyPurposeLogin(phone, sent_code.phone_code_hash) if code_type == 'SentCodeTypeApp' else EmailVerifyPurposeRegistration()
-                    
-                    await client(functions.account.SendVerifyEmailCodeRequest(
-                        purpose=purpose,
-                        email=email
-                    ))
-
-                    # Poll for the verification code in the email inbox
-                    email_code = await email_service.wait_for_code(timeout=60)
-
-                    if not email_code:
-                        logger.warning("Email code not received, attempting SMS bypass...")
-                        await asyncio.sleep(65)
-                        sent_code = await client(functions.auth.ResendCodeRequest(
-                            phone_number=phone,
-                            phone_code_hash=sent_code.phone_code_hash
-                        ))
-                    else:
-                        # Verify the email code using correct API signature
-                        await client(functions.account.VerifyEmailRequest(
-                            purpose=purpose,
-                            verification=EmailVerificationCode(code=email_code)
-                        ))
-                        if status_callback:
-                            await status_callback('status_email_success', phone=phone, id=bid, email=email)
-
-                        # Now request the phone code via SMS
-                        await asyncio.sleep(2)
-                        sent_code = await client.send_code_request(phone)
-
+                    new_type = type(sent_code.type).__name__
+                    logger.info(f"ResendCodeRequest successful. New code type: {new_type}")
                 except RPCError as e:
-                    logger.error(f"Email verification RPC error: {e}")
-                    # Fall back to SMS bypass
-                    await asyncio.sleep(65)
-                    try:
-                        sent_code = await client(functions.auth.ResendCodeRequest(
-                            phone_number=phone,
-                            phone_code_hash=sent_code.phone_code_hash
-                        ))
-                    except Exception as resend_err:
-                        logger.error(f"Resend SMS failed: {resend_err}")
-                        await self.api.cancel_order_booking(bid)
-                        return {"success": False, "error": f"رقم محظور برمجياً أو مغلق: {resend_err}"}
+                    logger.error(f"ResendCodeRequest failed: {e}")
+                    await self.api.cancel_order_booking(bid)
+                    return {"success": False, "error": f"رقم محظور - تيليجرام رفض إرسال SMS: {e}"}
 
             # --- Step 5: Poll SMS from Anosim ---
             code = None
