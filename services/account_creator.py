@@ -212,7 +212,8 @@ class AccountCreator:
         finally:
             await client.disconnect()
             sp2 = f"{session_path}.session"
-            if os.path.exists(sp2) and not database.get_account(phone):
+            existing = [a for a in database.get_all_accounts() if a[0] == phone]
+            if os.path.exists(sp2) and not existing:
                 os.remove(sp2)
 
     # ── Helpers ─────────────────────────────────────────────────────────
