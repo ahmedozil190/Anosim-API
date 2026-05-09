@@ -138,6 +138,7 @@ async def process_email(message: types.Message, state: FSMContext):
             await message.answer(f"❌ Error: {error}")
             return
 
+    await state.update_data(email=email)
     await message.answer("📩 Code sent! Please **SEND** the code from your email:")
     await state.set_state(RegisterStates.waiting_for_email_code)
 
@@ -147,8 +148,11 @@ async def process_email_code(message: types.Message, state: FSMContext):
     data = active_sessions.get(message.from_user.id)
     if not data: return
     
+    s_data = await state.get_data()
+    email = s_data.get('email', '')
+    
     await message.answer("⏳ Verifying email code...")
-    sent_code, error = await creator.verify_email_and_poll(data['client'], "", code, data['phone'])
+    sent_code, error = await creator.verify_email_and_poll(data['client'], email, code, data['phone'])
     
     if error:
         await message.answer(f"❌ Error: {error}")

@@ -80,7 +80,13 @@ class AccountCreator:
     async def verify_email_and_poll(self, client, email, code, phone):
         """Verifies the email and requests the SMS code again."""
         try:
-            await client(functions.account.VerifyEmailRequest(email=email, code=code))
+            # Using the official account.verifyEmail call
+            await client(functions.account.VerifyEmailRequest(
+                email=email,
+                code=code
+            ))
+            # Telegram sometimes needs a tiny delay after email verification
+            await asyncio.sleep(1)
             # After email verification, Telegram allows sending the SMS code
             sent_code = await client.send_code_request(phone)
             return sent_code, None
