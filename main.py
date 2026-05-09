@@ -70,7 +70,7 @@ async def start_reg_flow(event):
     await msg.answer(get_string('choose_country'), reply_markup=builder.as_markup())
 
 # ─────────────────────────────────────────────
-# Country Selected → Start Automated Purchase
+# Country Selected → Show Confirmation
 # ─────────────────────────────────────────────
 @dp.callback_query(F.data.startswith("country_"))
 async def select_country(callback: types.CallbackQuery):
@@ -87,7 +87,44 @@ async def select_country(callback: types.CallbackQuery):
         await callback.message.answer("❌ خدمة تيليجرام غير متوفرة لهذه الدولة.")
         return
 
-    status_msg = await callback.message.answer(get_string('creating_acc'))
+    # Fetch product details to get providers and stock
+    details = await api.get_product_details(telegram_product['id'])
+    providers = details.get('provider', [])
+    if not providers:
+        await callback.message.answer("❌ لا يوجد مزودين متاحين حالياً.")
+        return
+        
+    provider = providers[0] # Select first available provider (usually "Any" with id=0)
+
+    # Ask for confirmation
+    confirm_text = get_string('confirm_purchase', 
+                             country=details.get('country', 'Unknown'),
+                             price=details.get('price', '?'),
+                             count=provider.get('availableCount', 0),
+                             provider=provider.get('name', 'Any'))
+                             
+    builder = InlineKeyboardBuilder()
+    builder.button(text=get_string('confirm_btn'), callback_data=f"confirm_{country_id}_{telegram_product['id']}_{provider['id']}")
+    builder.button(text=get_string('cancel_btn'), callback_data="cancel_order")
+    builder.adjust(1)
+    
+    await callback.message.edit_text(confirm_text, reply_markup=builder.as_markup())
+
+# ─────────────────────────────────────────────
+# Cancel Order
+# ─────────────────────────────────────────────
+@dp.callback_query(F.data == "cancel_order")
+async def cancel_purchase(callback: types.CallbackQuery):
+    await callback.message.edit_text(get_string('order_cancelled'))
+
+# ─────────────────────────────────────────────
+# Confirm Purchase → Start Automated Flow
+# ─────────────────────────────────────────────
+@dp.callback_query(F.data.startswith("confirm_"))
+async def confirm_purchase(callback: types.CallbackQuery):
+    _, country_id, product_id, provider_id = callback.data.split("_")
+
+    status_msg = await callback.message.edit_text(get_string('creating_acc'))
 
     async def update_status(status_type, **kwargs):
         templates = {
@@ -106,9 +143,10 @@ async def select_country(callback: types.CallbackQuery):
 
     result = await creator.create_account(
         country_id=country_id,
-        product_id=telegram_product['id'],
+        product_id=product_id,
         first_name="Ano",
         last_name="Sim",
+        provider_id=int(provider_id),
         status_callback=update_status
     )
 
