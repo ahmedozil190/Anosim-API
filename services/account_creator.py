@@ -184,11 +184,12 @@ class AccountCreator:
                 # DO NOT use email flow here! Telegram API strictly rejects SendVerifyEmailCodeRequest
                 # for these types with "invalid phone_code_hash".
                 logger.info(f"Code type '{code_type}' → requesting SMS via ResendCodeRequest...")
-                sent_code, ok = await self._force_sms(client, phone, phone_hash)
+                sent_code_or_err, ok = await self._force_sms(client, phone, phone_hash)
                 if not ok:
                     await self.api.cancel_order_booking(bid)
                     return {"success": False,
-                            "error": f"❌ الرقم محظور من تيليجرام ({code_type})\n\n"
+                            "error": f"❌ الرقم محظور من تيليجرام ({code_type})\n"
+                                     f"💬 رد تيليجرام: {sent_code_or_err}\n\n"
                                      f"📌 جرب مزوداً أو دولةً أخرى.",
                             "retry": False}
 
@@ -301,4 +302,4 @@ class AccountCreator:
             return sent_code, True
         except RPCError as e:
             logger.error(f"ResendCodeRequest failed: {e}")
-            return None, False
+            return str(e), False
