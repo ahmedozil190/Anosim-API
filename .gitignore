@@ -1,0 +1,18 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Sessions and Database
+sessions/
+*.session
+*.session-journal
+bot_database.db
+
+# Environment variables
+.env
+config.py
+
+# OS generated files
+.DS_Store
+Thumbs.db
