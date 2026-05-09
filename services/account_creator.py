@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import random
 from telethon import TelegramClient, functions
 from telethon.tl.types import (
     EmailVerifyPurposeLoginSetup,
@@ -36,13 +37,23 @@ class AccountCreator:
             }
             logger.info(f"Using proxy: {PROXY_HOST}:{PROXY_PORT}")
 
+        # Randomize device info to prevent fingerprinting
+        models = ['Samsung SM-S918B', 'Samsung SM-G998B', 'Pixel 8 Pro', 'Pixel 7a', 'Xiaomi 13 Pro', 'OnePlus 11']
+        sys_versions = ['12', '13', '14']
+        app_versions = ['10.1.1', '10.2.0', '10.5.0', '9.7.0']
+
+        device_model = random.choice(models)
+        system_version = random.choice(sys_versions)
+        app_version = random.choice(app_versions)
+        logger.info(f"Device Profile: {device_model} / Android {system_version} / App {app_version}")
+
         return TelegramClient(
             session_path,
             TELEGRAM_API_ID,
             TELEGRAM_API_HASH,
-            device_model='Samsung SM-S918B',
-            system_version='13',
-            app_version='10.1.1',
+            device_model=device_model,
+            system_version=system_version,
+            app_version=app_version,
             lang_code='en',
             system_lang_code='en-US',
             proxy=proxy,
