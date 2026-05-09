@@ -70,7 +70,7 @@ async def start_reg_flow(event):
     await msg.answer(get_string('choose_country'), reply_markup=builder.as_markup())
 
 # ─────────────────────────────────────────────
-# Country Selected → Show Confirmation
+# Country Selected → Show Providers
 # ─────────────────────────────────────────────
 @dp.callback_query(F.data.startswith("country_"))
 async def select_country(callback: types.CallbackQuery):
@@ -94,17 +94,41 @@ async def select_country(callback: types.CallbackQuery):
         await callback.message.answer("❌ لا يوجد مزودين متاحين حالياً.")
         return
         
-    provider = providers[0] # Select first available provider (usually "Any" with id=0)
+    builder = InlineKeyboardBuilder()
+    for prov in providers:
+        builder.button(
+            text=f"📶 {prov['name']} ({prov['availableCount']})",
+            callback_data=f"provider_{country_id}_{telegram_product['id']}_{prov['id']}"
+        )
+    builder.adjust(1)
+    
+    await callback.message.edit_text(get_string('choose_provider'), reply_markup=builder.as_markup())
+
+# ─────────────────────────────────────────────
+# Provider Selected → Show Confirmation
+# ─────────────────────────────────────────────
+@dp.callback_query(F.data.startswith("provider_"))
+async def select_provider(callback: types.CallbackQuery):
+    _, country_id, product_id, provider_id = callback.data.split("_")
+    
+    # Fetch details again to get fresh count and price
+    details = await api.get_product_details(product_id)
+    providers = details.get('provider', [])
+    provider = next((p for p in providers if str(p['id']) == provider_id), None)
+    
+    if not provider:
+        await callback.message.answer("❌ المزود غير متاح.")
+        return
 
     # Ask for confirmation
     confirm_text = get_string('confirm_purchase', 
                              country=details.get('country', 'Unknown'),
                              price=details.get('price', '?'),
                              count=provider.get('availableCount', 0),
-                             provider=provider.get('name', 'Any'))
+                             provider=provider.get('name', 'Unknown'))
                              
     builder = InlineKeyboardBuilder()
-    builder.button(text=get_string('confirm_btn'), callback_data=f"confirm_{country_id}_{telegram_product['id']}_{provider['id']}")
+    builder.button(text=get_string('confirm_btn'), callback_data=f"confirm_{country_id}_{product_id}_{provider_id}")
     builder.button(text=get_string('cancel_btn'), callback_data="cancel_order")
     builder.adjust(1)
     
@@ -124,9 +148,21 @@ async def cancel_purchase(callback: types.CallbackQuery):
 async def confirm_purchase(callback: types.CallbackQuery):
     _, country_id, product_id, provider_id = callback.data.split("_")
 
+    # Fetch details one last time for the status message
+    details = await api.get_product_details(product_id)
+    providers = details.get('provider', [])
+    provider = next((p for p in providers if str(p['id']) == provider_id), None)
+    
+    price_val = details.get('price', '?')
+    prov_name = provider.get('name', 'Unknown') if provider else 'Unknown'
+
     status_msg = await callback.message.edit_text(get_string('creating_acc'))
 
     async def update_status(status_type, **kwargs):
+        # Merge our known price/provider into kwargs
+        kwargs['price'] = price_val
+        kwargs['provider'] = prov_name
+        
         templates = {
             'status_bought': get_string('status_bought', **kwargs),
             'status_requesting': get_string('status_requesting', **kwargs),
