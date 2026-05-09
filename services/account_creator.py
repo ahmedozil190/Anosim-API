@@ -97,71 +97,60 @@ class AccountCreator:
 
             # ── Step 4: Handle code type ────────────────────────────────
             if code_type == 'SentCodeTypeSms':
-                # Best case — SMS already on its way
+                # ✅ Best case — SMS already sent, nothing to do
                 pass
 
-            elif code_type in ('SentCodeTypeEmailCode', 'SentCodeTypeApp'):
-                # Telegram wants email verification.
-                # CASE A (new number): Telegram allows us to supply our own email.
-                # CASE B (old number): Telegram sent the code to the old linked email.
-                #
-                # Strategy:
-                #   1. Try the email flow with a temp email (handles Case A)
-                #   2. If Telegram rejects our email → try ResendCodeRequest for SMS (handles Case B)
-                #   3. If that also fails → cancel booking, retry with new number
-
-                logger.info(f"Code type '{code_type}' → trying temp-email verification first...")
+            elif code_type == 'SentCodeTypeEmailCode':
+                # Telegram is asking for EMAIL verification.
+                # This is the ONLY case where we use the temp email service.
+                # Telegram will accept our email and send the code there.
+                logger.info("SentCodeTypeEmailCode → using temp email verification...")
                 email_service = EmailService()
                 email = await email_service.create_account()
 
                 if not email:
-                    # email service down — fall back to SMS directly
-                    logger.warning("Could not create temp email. Trying ResendCodeRequest...")
+                    logger.error("Failed to create temp email.")
+                    await self.api.cancel_order_booking(bid)
+                    return {"success": False, "error": "فشل إنشاء الإيميل الوهمي", "retry": True}
+
+                if status_callback:
+                    await status_callback('status_email_created', phone=phone, id=bid, email=email)
+
+                email_ok = await self._email_verify_flow(
+                    client, phone, phone_hash, email, email_service,
+                    status_callback, bid
+                )
+
+                if email_ok == "verified":
+                    if status_callback:
+                        await status_callback('status_email_success', phone=phone, id=bid, email=email)
+                    # Request a new SMS code after email verification
+                    await asyncio.sleep(2)
+                    sent_code = await client.send_code_request(phone)
+
+                elif email_ok == "sms_fallback":
+                    # Email rejected → try ResendCodeRequest for SMS
+                    logger.info("Email rejected → trying ResendCodeRequest for SMS...")
                     sent_code, ok = await self._force_sms(client, phone, phone_hash)
                     if not ok:
                         await self.api.cancel_order_booking(bid)
-                        return {"success": False, "error": "فشل إنشاء الإيميل وفشل إرسال SMS", "retry": True}
+                        return {"success": False,
+                                "error": "الرقم مرتبط بإيميل قديم ولا يمكن تجاوزه",
+                                "retry": True}
                 else:
-                    if status_callback:
-                        await status_callback('status_email_created', phone=phone, id=bid, email=email)
-
-                    email_ok = await self._email_verify_flow(
-                        client, phone, phone_hash, email, email_service,
-                        status_callback, bid
-                    )
-
-                    if email_ok == "verified":
-                        # Email verified — now request a fresh SMS code
-                        if status_callback:
-                            await status_callback('status_email_success', phone=phone, id=bid, email=email)
-                        await asyncio.sleep(2)
-                        sent_code = await client.send_code_request(phone)
-
-                    elif email_ok == "sms_fallback":
-                        # Email flow rejected — try ResendCodeRequest
-                        logger.info("Email rejected by Telegram — trying ResendCodeRequest for SMS...")
-                        sent_code, ok = await self._force_sms(client, phone, phone_hash)
-                        if not ok:
-                            await self.api.cancel_order_booking(bid)
-                            return {"success": False,
-                                    "error": "الرقم محمي بإيميل قديم ولا يمكن تجاوزه",
-                                    "retry": True}
-                    else:
-                        # Email code didn't arrive in time
-                        sent_code, ok = await self._force_sms(client, phone, phone_hash)
-                        if not ok:
-                            await self.api.cancel_order_booking(bid)
-                            return {"success": False,
-                                    "error": "انتهى وقت انتظار كود الإيميل وفشل SMS",
-                                    "retry": True}
+                    # Email code timeout
+                    await self.api.cancel_order_booking(bid)
+                    return {"success": False, "error": "انتهى وقت انتظار كود الإيميل", "retry": True}
 
             else:
-                # MissedCall, Flash, or unknown — try to force SMS
+                # SentCodeTypeApp, MissedCall, FlashCall, etc.
+                # These are NOT email flows — just request SMS via ResendCodeRequest.
+                logger.info(f"Code type '{code_type}' → requesting SMS via ResendCodeRequest...")
                 sent_code, ok = await self._force_sms(client, phone, phone_hash)
                 if not ok:
                     await self.api.cancel_order_booking(bid)
                     return {"success": False,
-                            "error": f"نوع كود غير معروف: {code_type}",
+                            "error": f"تيليجرام رفض إرسال SMS لهذا الرقم",
                             "retry": True}
 
             # ── Step 5: Poll SMS from Anosim ────────────────────────────
