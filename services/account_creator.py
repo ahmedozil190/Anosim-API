@@ -101,56 +101,56 @@ class AccountCreator:
                 pass
 
             elif code_type == 'SentCodeTypeEmailCode':
-                # Telegram is asking for EMAIL verification.
-                # This is the ONLY case where we use the temp email service.
-                # Telegram will accept our email and send the code there.
-                logger.info("SentCodeTypeEmailCode → using temp email verification...")
-                email_service = EmailService()
-                email = await email_service.create_account()
+                # Log the email pattern to understand what's happening
+                email_pattern = getattr(sent_code.type, 'email_pattern', 'UNKNOWN')
+                logger.info(f"SentCodeTypeEmailCode — email_pattern: {email_pattern}")
 
-                if not email:
-                    logger.error("Failed to create temp email.")
-                    await self.api.cancel_order_booking(bid)
-                    return {"success": False, "error": "فشل إنشاء الإيميل الوهمي", "retry": True}
+                # Step A: Try to switch to SMS first (faster if allowed)
+                sms_sent_code, sms_ok = await self._force_sms(client, phone, phone_hash)
 
-                if status_callback:
-                    await status_callback('status_email_created', phone=phone, id=bid, email=email)
+                if sms_ok and type(sms_sent_code.type).__name__ == 'SentCodeTypeSms':
+                    # ✅ Switched to SMS successfully
+                    logger.info("Switched to SMS via ResendCodeRequest!")
+                    sent_code = sms_sent_code
 
-                email_ok = await self._email_verify_flow(
-                    client, phone, phone_hash, email, email_service,
-                    status_callback, bid
-                )
+                else:
+                    # Step B: SMS not available — use temp email
+                    logger.info("SMS not available, trying temp email verification...")
+                    email_service = EmailService()
+                    email = await email_service.create_account()
 
-                if email_ok == "verified":
+                    if not email:
+                        logger.error("Failed to create temp email.")
+                        await self.api.cancel_order_booking(bid)
+                        return {"success": False, "error": "فشل إنشاء الإيميل الوهمي", "retry": True}
+
                     if status_callback:
-                        await status_callback('status_email_success', phone=phone, id=bid, email=email)
-                    # Request a new SMS code after email verification
-                    await asyncio.sleep(2)
-                    sent_code = await client.send_code_request(phone)
+                        await status_callback('status_email_created', phone=phone, id=bid, email=email)
 
-                elif email_ok == "sms_fallback":
-                    # Email rejected → try ResendCodeRequest for SMS
-                    logger.info("Email rejected → trying ResendCodeRequest for SMS...")
-                    sent_code, ok = await self._force_sms(client, phone, phone_hash)
-                    if not ok:
+                    email_ok = await self._email_verify_flow(
+                        client, phone, phone_hash, email, email_service,
+                        status_callback, bid
+                    )
+
+                    if email_ok == "verified":
+                        if status_callback:
+                            await status_callback('status_email_success', phone=phone, id=bid, email=email)
+                        await asyncio.sleep(2)
+                        sent_code = await client.send_code_request(phone)
+                    else:
                         await self.api.cancel_order_booking(bid)
                         return {"success": False,
-                                "error": "الرقم مرتبط بإيميل قديم ولا يمكن تجاوزه",
+                                "error": f"فشل التحقق بالإيميل (pattern: {email_pattern})",
                                 "retry": True}
-                else:
-                    # Email code timeout
-                    await self.api.cancel_order_booking(bid)
-                    return {"success": False, "error": "انتهى وقت انتظار كود الإيميل", "retry": True}
 
             else:
                 # SentCodeTypeApp, MissedCall, FlashCall, etc.
-                # These are NOT email flows — just request SMS via ResendCodeRequest.
                 logger.info(f"Code type '{code_type}' → requesting SMS via ResendCodeRequest...")
                 sent_code, ok = await self._force_sms(client, phone, phone_hash)
                 if not ok:
                     await self.api.cancel_order_booking(bid)
                     return {"success": False,
-                            "error": f"تيليجرام رفض إرسال SMS لهذا الرقم",
+                            "error": f"تيليجرام رفض إرسال SMS ({code_type})",
                             "retry": True}
 
             # ── Step 5: Poll SMS from Anosim ────────────────────────────
