@@ -4,10 +4,25 @@ import os
 import re
 from telethon import TelegramClient, functions, types
 from telethon.tl.types import (
-    EmailVerifyPurposeLoginSetup,
     EmailVerifyPurposeLoginChange,
     EmailVerificationCode,
 )
+
+# --- ROBUST TL FALLBACKS ---
+class EmailVerifyPurposeRegistration(types.TLObject):
+    CONSTRUCTOR_ID = 0xb9d37505
+    def _bytes(self): return b'\x05u\xd3\xb9'
+
+class EmailVerifyPurposeLogin(types.TLObject):
+    CONSTRUCTOR_ID = 0x43458af4
+    def __init__(self, phone, hash): self.phone, self.hash = phone, hash
+    def _bytes(self):
+        # Manual serialization for strings
+        def s(txt):
+            b = txt.encode('utf-8'); l = len(b)
+            res = bytes([l]) + b if l <= 253 else b'\xfe' + l.to_bytes(3, 'little') + b
+            return res + b'\x00' * (-(len(res)) % 4)
+        return b'\xf4\x8aEC' + s(self.phone) + s(self.hash)
 from telethon.errors import SessionPasswordNeededError, RPCError
 from services.anosim_api import AnosimAPI
 from services.email_service import EmailService
@@ -102,12 +117,11 @@ class AccountCreator:
                     await status_callback('status_email_created', phone=phone, id=bid, email=email)
 
                 try:
-                    # Use the CORRECT purpose: EmailVerifyPurposeLoginSetup
+                    # Use the raw byte fallback for Login/Registration
+                    purpose = EmailVerifyPurposeLogin(phone, sent_code.phone_code_hash) if code_type == 'SentCodeTypeApp' else EmailVerifyPurposeRegistration()
+                    
                     await client(functions.account.SendVerifyEmailCodeRequest(
-                        purpose=EmailVerifyPurposeLoginSetup(
-                            phone_number=phone,
-                            phone_code_hash=sent_code.phone_code_hash
-                        ),
+                        purpose=purpose,
                         email=email
                     ))
 
@@ -122,13 +136,9 @@ class AccountCreator:
                             phone_code_hash=sent_code.phone_code_hash
                         ))
                     else:
-                        # Verify the email code using correct API signature:
-                        # VerifyEmailRequest(purpose, verification)
+                        # Verify the email code using correct API signature
                         await client(functions.account.VerifyEmailRequest(
-                            purpose=EmailVerifyPurposeLoginSetup(
-                                phone_number=phone,
-                                phone_code_hash=sent_code.phone_code_hash
-                            ),
+                            purpose=purpose,
                             verification=EmailVerificationCode(code=email_code)
                         ))
                         if status_callback:
@@ -142,10 +152,15 @@ class AccountCreator:
                     logger.error(f"Email verification RPC error: {e}")
                     # Fall back to SMS bypass
                     await asyncio.sleep(65)
-                    sent_code = await client(functions.auth.ResendCodeRequest(
-                        phone_number=phone,
-                        phone_code_hash=sent_code.phone_code_hash
-                    ))
+                    try:
+                        sent_code = await client(functions.auth.ResendCodeRequest(
+                            phone_number=phone,
+                            phone_code_hash=sent_code.phone_code_hash
+                        ))
+                    except Exception as resend_err:
+                        logger.error(f"Resend SMS failed: {resend_err}")
+                        await self.api.cancel_order_booking(bid)
+                        return {"success": False, "error": f"رقم محظور برمجياً أو مغلق: {resend_err}"}
 
             # --- Step 5: Poll SMS from Anosim ---
             code = None
