@@ -61,9 +61,9 @@ async def start_reg_flow(event):
         return
 
     builder = InlineKeyboardBuilder()
-    for c in countries[:20]:
+    for c in countries:
         builder.button(
-            text=f"🌍 {c['country']} (${c.get('price', '?')})",
+            text=f"🌍 {c['country']}",
             callback_data=f"country_{c['id']}"
         )
     builder.adjust(2)
