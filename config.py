@@ -14,10 +14,12 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
 # Management Bot Token
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# Database Settings
-DB_PATH = "database.db"
+# Persistent Storage: use /data if it exists (hosting Volume), else use local directory
+_DATA_DIR = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
 
-# Storage
-SESSIONS_DIR = "sessions"
-if not os.path.exists(SESSIONS_DIR):
-    os.makedirs(SESSIONS_DIR)
+# Database
+DB_PATH = os.path.join(_DATA_DIR, "database.db")
+
+# Sessions
+SESSIONS_DIR = os.path.join(_DATA_DIR, "sessions")
+os.makedirs(SESSIONS_DIR, exist_ok=True)
